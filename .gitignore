@@ -1,0 +1,10 @@
+# Local tooling state. DOCA keeps its own .doca/.gitignore for the DB;
+# doca.log is the one file it leaves out.
+.orc/
+.doca/doca.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/

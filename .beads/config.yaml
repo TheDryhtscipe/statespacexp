@@ -1,0 +1,9 @@
+# Beads Configuration File
+issue-prefix: "statespacexp"
+no-db: false
+no-daemon: false
+no-auto-flush: false
+no-auto-import: false
+json: false
+auto-start-daemon: true
+sync-branch: "beads-sync"

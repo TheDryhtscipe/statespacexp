@@ -1,0 +1,12 @@
+# DOCA database files (not tracked)
+doca.db
+surreal.db
+*.db
+doca.sqlite*
+
+# Search indexes
+index/
+
+# Local config (contains credentials) and runtime logs
+config.yaml
+*.log
