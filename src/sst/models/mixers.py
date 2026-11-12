@@ -41,7 +41,7 @@ from sst.models.spec import (
     TransformerOptions,
     TTTOptions,
 )
-from sst.models.ttt import TTTInnerConfig, ttt_scan
+from sst.models.ttt import TTTInnerConfig, TTTScanInputs, ttt_scan
 
 ALPHA_INIT_MIN = 0.5
 ALPHA_INIT_MAX = 0.99
@@ -319,10 +319,14 @@ class HouseholderMixer(RecurrentMixer):
 
 class TTTMixer(RecurrentMixer):
     """Test-time training layer (see ttt.py). eta_t = eta_max * sigmoid(w . x_t) per head.
+    With token_eta, the readout at mini-batch position i is scaled by
+    s_i = max(1/i + learnable_token_idx[i-1], 0) (see ttt_scan).
 
     The initial inner weights W_0 (and the inner LN) are learned, shared across
     sequences. normalise_keys L2-normalises both keys and queries.
     """
+
+    token_idx: Tensor
 
     def __init__(self, spec: ModelSpec, options: TTTOptions) -> None:
         super().__init__(
@@ -342,16 +346,49 @@ class TTTMixer(RecurrentMixer):
             self.inner_init.append(nn.Parameter(torch.zeros(h, d)))
         self.ln_weight = nn.Parameter(torch.ones(h, d)) if options.inner_norm else None
         self.ln_bias = nn.Parameter(torch.zeros(h, d)) if options.inner_norm else None
+        # Published token_eta: 1/i for i = 1..minibatch plus a learned offset (init 0).
+        self.register_buffer(
+            "token_idx", 1.0 / torch.arange(1, options.minibatch + 1), persistent=False
+        )
+        self.learnable_token_idx = (
+            nn.Parameter(torch.zeros(options.minibatch)) if options.token_eta else None
+        )
+
+    def inner_rates(self, x: Tensor) -> Tensor:
+        """Per-token inner learning rate eta [B, H, T] (before any token_eta scaling)."""
+        return self.eta_max * torch.sigmoid(self._per_head(self.eta_proj, x).squeeze(-1))
+
+    def token_scale(self) -> Tensor | None:
+        """token_eta: s_i = max(1/i + offset_i, 0) for i = 1..minibatch; else None."""
+        if self.learnable_token_idx is None:
+            return None
+        return torch.clamp_min(self.token_idx + self.learnable_token_idx, 0.0)
+
+    def inner_norm(self) -> tuple[Tensor, Tensor] | None:
+        if self.ln_weight is None or self.ln_bias is None:
+            return None
+        return self.ln_weight, self.ln_bias
+
+    def scan_inputs(self, x: Tensor) -> TTTScanInputs:
+        """Everything ttt_scan receives for mixer input x [B, T, d_model]."""
+        q, k, v = self.project(x)
+        return self._scan_inputs(x, q, k, v)
+
+    def _scan_inputs(self, x: Tensor, q: Tensor, k: Tensor, v: Tensor) -> TTTScanInputs:
+        return TTTScanInputs(
+            q=q,
+            k=k.squeeze(3),
+            v=v.squeeze(3),
+            eta=self.inner_rates(x),
+            init=tuple(p for p in self.inner_init),
+            norm=self.inner_norm(),
+            token_scale=self.token_scale(),
+        )
 
     def core(self, x: Tensor, q: Tensor, k: Tensor, v: Tensor) -> Tensor:
-        eta = self.eta_max * torch.sigmoid(self._per_head(self.eta_proj, x).squeeze(-1))
-        norm = (
-            (self.ln_weight, self.ln_bias)
-            if self.ln_weight is not None and self.ln_bias is not None
-            else None
-        )
-        init = tuple(p for p in self.inner_init)
-        return ttt_scan(q, k.squeeze(3), v.squeeze(3), eta, init, self.cfg, norm).outputs
+        i = self._scan_inputs(x, q, k, v)
+        scan = ttt_scan(i.q, i.k, i.v, i.eta, i.init, self.cfg, i.norm, token_scale=i.token_scale)
+        return scan.outputs
 
 
 class S4DMixer(Mixer):

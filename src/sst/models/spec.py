@@ -41,6 +41,11 @@ class TTTOptions:
     """Inner model, LN-residual inner model (Sun et al.), mini-batch size, eta_max for
     eta_t = eta_max * sigmoid(w . x_t), and L2 normalisation of keys and queries.
 
+    token_eta applies the published in-mini-batch scaling (test-time-training/
+    ttt-lm-pytorch): the readout at position i (1-based) of a mini-batch uses
+    W_i = W_start - s_i * sum_{r <= i} eta_r grad_r with s_i = max(1/i + offset_i, 0) and a
+    learned offset per position (initialised to 0). See ttt.ttt_scan.
+
     eta_max=None means Sun et al.'s base rate for the inner model: 1.0 for linear and
     0.1 for mlp. The inner loss here is 1/2 ||f(k) - v||^2, so at the same eta the step
     is half the paper's (which has no 1/2).
@@ -51,6 +56,7 @@ class TTTOptions:
     minibatch: int = 1
     eta_max: float | None = None
     normalise_keys: bool = True
+    token_eta: bool = False
 
     def resolved_eta_max(self) -> float:
         if self.eta_max is not None:

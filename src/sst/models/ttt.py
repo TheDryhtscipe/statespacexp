@@ -58,6 +58,20 @@ class TTTScanResult(NamedTuple):
     weight_states: tuple[Tensor, ...] | None
 
 
+class TTTScanInputs(NamedTuple):
+    """The arguments a TTT mixer passes to ttt_scan: q, k, v [B, H, T, d], eta [B, H, T],
+    init per-head W_0 tensors [H, *shape], inner LN (gamma, beta) [H, d] or None, and
+    token_scale [minibatch] or None."""
+
+    q: Tensor
+    k: Tensor
+    v: Tensor
+    eta: Tensor
+    init: tuple[Tensor, ...]
+    norm: tuple[Tensor, Tensor] | None
+    token_scale: Tensor | None
+
+
 def _matvec(w: Tensor, x: Tensor) -> Tensor:
     """w [..., m, n] @ x [..., n] -> [..., m], with broadcasting over leading dims.
 
@@ -204,6 +218,7 @@ def _dual_chunk(
     eta: Tensor,
     cfg: TTTInnerConfig,
     norm: tuple[Tensor, Tensor] | None,
+    scale: Tensor | None = None,
 ) -> tuple[Tensor, tuple[Tensor, ...]]:
     """One mini-batch in the dual form (Sun et al., Sec. 2.5): the same outputs as the
     primal form without materialising per-token weights.
@@ -211,11 +226,17 @@ def _dual_chunk(
     Every gradient is rank one, so with W_s = W_0 - sum_{r <= s} eta_r a_r b_r^T,
     W_s x = W_0 x - sum_{r <= s} eta_r (b_r . x) a_r: a causally masked, attention-like
     sum. weights: [B, H, 1, *shape]; q, k, v: [B, H, c, d]; eta: [B, H, c].
+
+    scale [c] (token_eta): the readout at position s uses s_s * sum_{r <= s}, so the
+    mask entry is s_s eta_r, and the carried weights use the last position's s_c.
     """
     dy, d_hidden, hidden_k = _grad_factors(weights, k, v, cfg, norm)
     c = q.shape[2]
     causal = torch.ones(c, c, dtype=torch.bool, device=q.device).tril()
     mask = eta.unsqueeze(-2) * causal  # [B, H, c(s), c(r)] = eta_r [r <= s]
+    if scale is not None:
+        mask = scale.unsqueeze(-1) * mask
+        eta = scale[-1] * eta  # the carried weights are the last position's
     if cfg.inner_model == "linear":
         (w,) = weights
         y = _matvec(w, q) - (mask * (q @ k.transpose(-1, -2))) @ dy
@@ -246,6 +267,7 @@ def ttt_scan(
     cfg: TTTInnerConfig,
     norm: tuple[Tensor, Tensor] | None,
     return_states: bool = False,
+    token_scale: Tensor | None = None,
 ) -> TTTScanResult:
     """Run mini-batch TTT over the sequence.
 
@@ -254,9 +276,17 @@ def ttt_scan(
     form runs (same outputs, far less memory), except for the linear model with
     minibatch 1, where the primal form is cheaper. The primal form materialises
     per-token weights and can return them.
+
+    token_scale [minibatch] (TTTOptions.token_eta, published ttt-lm-pytorch scaling):
+    position i (1-based) of each mini-batch reads
+    W_i = W_start - token_scale[i-1] * sum_{r <= i} eta_r grad_r. Positions count from
+    the start of each torch.split chunk, so a short final chunk of c tokens uses
+    token_scale[:c] and carries W_c forward. None means no scaling (all ones).
     """
     if cfg.minibatch < 1:
         raise ValueError("minibatch must be >= 1")
+    if token_scale is not None and token_scale.shape != (cfg.minibatch,):
+        raise ValueError("token_scale must have shape [minibatch]")
     b, h, _, _ = q.shape
     weights = tuple(p.unsqueeze(0).unsqueeze(2).expand(b, h, 1, *p.shape[1:]) for p in init_weights)
     outputs: list[Tensor] = []
@@ -270,15 +300,24 @@ def ttt_scan(
         strict=True,
     )
     for q_c, k_c, v_c, eta_c in chunks:
+        scale_c = None if token_scale is None else token_scale[: q_c.shape[2]]
         if not return_states and (cfg.minibatch > 1 or cfg.inner_model == "mlp"):
-            out_c, weights = _dual_chunk(weights, q_c, k_c, v_c, eta_c, cfg, norm)
+            out_c, weights = _dual_chunk(weights, q_c, k_c, v_c, eta_c, cfg, norm, scale_c)
             outputs.append(out_c)
             continue
         grads = inner_grad(weights, k_c, v_c, cfg, norm)
-        per_token = tuple(
-            w - torch.cumsum(eta_c.view(*eta_c.shape, *([1] * (g.dim() - 3))) * g, dim=2)
-            for w, g in zip(weights, grads, strict=True)
-        )
+        if scale_c is None:
+            per_token = tuple(
+                w - torch.cumsum(eta_c.view(*eta_c.shape, *([1] * (g.dim() - 3))) * g, dim=2)
+                for w, g in zip(weights, grads, strict=True)
+            )
+        else:
+            per_token = tuple(
+                w
+                - scale_c.view(-1, *([1] * (g.dim() - 3)))
+                * torch.cumsum(eta_c.view(*eta_c.shape, *([1] * (g.dim() - 3))) * g, dim=2)
+                for w, g in zip(weights, grads, strict=True)
+            )
         outputs.append(inner_forward(per_token, q_c, cfg, norm))
         trajectory.append(per_token)
         weights = tuple(w[:, :, -1:] for w in per_token)

@@ -90,3 +90,30 @@ def test_field_type_cache_tells_same_named_classes_apart() -> None:
     da, db = declared_scalar(a, "x"), declared_scalar(b, "x")
     assert da is not None and da.kind is int
     assert db is not None and db.kind is float
+
+
+@pytest.mark.parametrize("token_eta", [False, True])
+def test_ttt_token_eta_round_trips_through_json_and_family_label(token_eta: bool) -> None:
+    from sst.config import spec_label
+    from sst.plan import parse_family
+
+    spec = ModelSpec("ttt", options=TTTOptions(inner_model="linear", minibatch=16, token_eta=token_eta))
+    cfg = RunConfig("parity", spec, lr=1e-3, seed=0, steps=10)
+    back = _round_trip(cfg)
+    assert isinstance(back.model.options, TTTOptions)
+    assert back.model.options.token_eta is token_eta
+    assert back.run_id == cfg.run_id
+    label = spec_label(spec)
+    assert ("token_eta=True" in label) is token_eta
+    parsed = parse_family(label)
+    assert isinstance(parsed.options, TTTOptions)
+    assert parsed.options.token_eta is token_eta
+    assert RunConfig("parity", parsed, lr=1e-3, seed=0, steps=10).run_id == cfg.run_id
+
+
+def test_ttt_token_eta_changes_run_id() -> None:
+    off = RunConfig("parity", ModelSpec("ttt", options=TTTOptions(minibatch=16)), lr=1e-3, seed=0, steps=10)
+    on = RunConfig(
+        "parity", ModelSpec("ttt", options=TTTOptions(minibatch=16, token_eta=True)), lr=1e-3, seed=0, steps=10
+    )
+    assert off.run_id != on.run_id
