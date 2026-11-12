@@ -319,8 +319,9 @@ class HouseholderMixer(RecurrentMixer):
 
 class TTTMixer(RecurrentMixer):
     """Test-time training layer (see ttt.py). eta_t = eta_max * sigmoid(w . x_t) per head.
-    With token_eta, the readout at mini-batch position i is scaled by
-    s_i = max(1/i + learnable_token_idx[i-1], 0) (see ttt_scan).
+    With token_eta, the readout at mini-batch position i uses the weights
+    W_start - s_i * sum_{r <= i} eta_r grad_r, where the accumulated update (not the
+    readout) is scaled by s_i = max(1/i + learnable_token_idx[i-1], 0) (see ttt_scan).
 
     The initial inner weights W_0 (and the inner LN) are learned, shared across
     sequences. normalise_keys L2-normalises both keys and queries.
