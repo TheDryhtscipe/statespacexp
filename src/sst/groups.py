@@ -18,6 +18,10 @@ The running state of a sequence of tokens g_1, ..., g_t is the left-to-right
 product ``s_t = g_1 . g_2 . ... . g_t``, which satisfies
 ``s_t = s_{t-1} . g_t``, so ``s_t = table[s_{t-1}, g_t]``.
 
+Alternating groups A_n: the even permutations of ``range(n)``, kept in the
+same lexicographic order as in S_n (so index 0 is still the identity) and
+composed by the same rule.
+
 Cyclic groups Z_n: element k is the residue k, and ``a . b = (a + b) mod n``.
 """
 
@@ -61,11 +65,8 @@ def cyclic_group(n: int) -> Group:
     return Group(name=f"Z{n}", table=table, identity=0, perms=None)
 
 
-def symmetric_group(n: int) -> Group:
-    """S_n with permutations in lexicographic order and ``(a . b)(i) = a(b(i))``."""
-    if n < 1:
-        raise ValueError(f"n must be >= 1, got {n}")
-    perms: tuple[Perm, ...] = tuple(itertools.permutations(range(n)))
+def _permutation_group(name: str, perms: tuple[Perm, ...]) -> Group:
+    """Cayley table of ``perms`` (closed under ``compose``, identity first)."""
     index = {p: i for i, p in enumerate(perms)}
     size = len(perms)
     table = np.empty((size, size), dtype=np.int64)
@@ -73,7 +74,28 @@ def symmetric_group(n: int) -> Group:
         for j, b in enumerate(perms):
             table[i, j] = index[compose(a, b)]
     table.setflags(write=False)
-    return Group(name=f"S{n}", table=table, identity=index[tuple(range(n))], perms=perms)
+    return Group(name=name, table=table, identity=index[tuple(range(len(perms[0])))], perms=perms)
+
+
+def symmetric_group(n: int) -> Group:
+    """S_n with permutations in lexicographic order and ``(a . b)(i) = a(b(i))``."""
+    if n < 1:
+        raise ValueError(f"n must be >= 1, got {n}")
+    return _permutation_group(f"S{n}", tuple(itertools.permutations(range(n))))
+
+
+def is_even(p: Perm) -> bool:
+    """True if ``p`` has an even number of inversions."""
+    inversions = sum(1 for i in range(len(p)) for j in range(i + 1, len(p)) if p[i] > p[j])
+    return inversions % 2 == 0
+
+
+def alternating_group(n: int) -> Group:
+    """A_n: the even permutations of S_n, in lexicographic order, same composition."""
+    if n < 1:
+        raise ValueError(f"n must be >= 1, got {n}")
+    perms = tuple(p for p in itertools.permutations(range(n)) if is_even(p))
+    return _permutation_group(f"A{n}", perms)
 
 
 def cayley(group: Group) -> npt.NDArray[np.int64]:

@@ -45,6 +45,7 @@ type JSONValue = str | int | float | bool | None | list[JSONValue] | dict[str, J
 
 Split = Literal["train", "val", "eval"]
 SPLIT_CODES: dict[str, int] = {"train": 0, "val": 1, "eval": 2}
+_SPLITS: dict[str, Split] = {"train": "train", "val": "val", "eval": "eval"}
 
 
 def _task_code(task_name: str) -> int:
@@ -159,6 +160,7 @@ class EvalResult:
     num_sequences: int
     seed: int
     buckets: tuple[BucketResult, ...]
+    split: Split = "eval"
 
     def to_dict(self) -> dict[str, JSONValue]:
         buckets: list[JSONValue] = []
@@ -175,11 +177,72 @@ class EvalResult:
             "eval_length": self.eval_length,
             "num_sequences": self.num_sequences,
             "seed": self.seed,
+            "split": self.split,
             "buckets": buckets,
         }
 
+    @staticmethod
+    def from_dict(d: dict[str, JSONValue]) -> "EvalResult":
+        """Inverse of :meth:`to_dict`."""
+        raw_buckets = d["buckets"]
+        if not isinstance(raw_buckets, list):
+            raise ValueError("buckets must be a list")
+        buckets = tuple(_bucket_from_dict(b) for b in raw_buckets)
+        split = _SPLITS.get(_as_str(d.get("split", "eval")))
+        if split is None:
+            raise ValueError(f"unknown split {d.get('split')!r}")
+        return EvalResult(
+            task=_as_str(d["task"]),
+            train_length=_as_int(d["train_length"]),
+            eval_length=_as_int(d["eval_length"]),
+            num_sequences=_as_int(d["num_sequences"]),
+            seed=_as_int(d["seed"]),
+            buckets=buckets,
+            split=split,
+        )
+
+
+def _as_int(v: JSONValue) -> int:
+    if isinstance(v, bool) or not isinstance(v, int):
+        raise ValueError(f"expected int, got {v!r}")
+    return v
+
+
+def _as_str(v: JSONValue) -> str:
+    if not isinstance(v, str):
+        raise ValueError(f"expected str, got {v!r}")
+    return v
+
+
+def _as_opt_float(v: JSONValue) -> float | None:
+    if v is None:
+        return None
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        raise ValueError(f"expected number or null, got {v!r}")
+    return float(v)
+
+
+def _bucket_from_dict(b: JSONValue) -> BucketResult:
+    if not isinstance(b, dict):
+        raise ValueError("bucket must be an object")
+    return BucketResult(
+        start=_as_int(b["start"]),
+        end=_as_int(b["end"]),
+        token_accuracy=_as_opt_float(b["token_accuracy"]),
+        num_scored=_as_int(b["num_scored"]),
+        sequence_accuracy=_as_opt_float(b["sequence_accuracy"]),
+        num_sequences_scored=_as_int(b["num_sequences_scored"]),
+        last_position=_as_int(b["last_position"]),
+        last_position_accuracy=_as_opt_float(b["last_position_accuracy"]),
+        last_position_count=_as_int(b["last_position_count"]),
+    )
+
 
 Predictor = Callable[[torch.Tensor], torch.Tensor]
+
+
+class NonFiniteLogitsError(ValueError):
+    """``predict`` returned NaN or inf logits (for example from a diverged model)."""
 
 
 def evaluate(
@@ -192,6 +255,7 @@ def evaluate(
     device: torch.device | str = "cpu",
     seed: int = 0,
     max_multiplier: int = 8,
+    split: Split = "eval",
 ) -> EvalResult:
     """Score ``predict`` on ``num_sequences`` eval sequences of length ``max_multiplier * L``.
 
@@ -199,15 +263,18 @@ def evaluate(
     with ``C == task.num_classes``. It runs under ``torch.no_grad()``; putting
     a model in eval mode is the caller's job.
 
-    The whole eval set is drawn up front from ``make_rng(task.name, "eval",
+    The whole eval set is drawn up front from ``make_rng(task.name, split,
     seed)`` with one ``task.sample`` call, so the data and the result do not
-    depend on ``batch_size``.
+    depend on ``batch_size``. ``split`` is ``"eval"`` for reported results and
+    ``"val"`` for model selection.
+
+    Raises :class:`NonFiniteLogitsError` if any logit is NaN or inf.
     """
     if num_sequences < 1 or batch_size < 1:
         raise ValueError("num_sequences and batch_size must be >= 1")
     edges = bucket_edges(train_length, max_multiplier)
     eval_length = edges[-1]
-    data = task.sample(num_sequences, eval_length, make_rng(task.name, "eval", seed))
+    data = task.sample(num_sequences, eval_length, make_rng(task.name, split, seed))
     totals = [BucketCounts(0, 0, 0, 0, 0, 0) for _ in range(len(edges) - 1)]
     with torch.no_grad():
         for lo in range(0, num_sequences, batch_size):
@@ -218,7 +285,7 @@ def evaluate(
             if tuple(logits.shape) != expected_shape:
                 raise ValueError(f"logits shape {tuple(logits.shape)} != expected {expected_shape}")
             if not bool(torch.isfinite(logits).all()):
-                raise ValueError("logits contain NaN or inf")
+                raise NonFiniteLogitsError("logits contain NaN or inf")
             preds = logits.argmax(dim=-1).cpu().numpy()
             correct = preds == data.targets[lo:hi]
             batch_counts = bucket_counts(correct, data.mask[lo:hi], edges)
@@ -244,4 +311,5 @@ def evaluate(
         num_sequences=num_sequences,
         seed=seed,
         buckets=buckets,
+        split=split,
     )

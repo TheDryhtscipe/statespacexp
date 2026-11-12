@@ -11,6 +11,7 @@ import torch
 from sst.evaluation import (
     BucketCounts,
     EvalResult,
+    NonFiniteLogitsError,
     Split,
     bucket_counts,
     bucket_edges,
@@ -378,3 +379,52 @@ def test_make_rng_rejects_unknown_split() -> None:
 def test_make_rng_rejects_negative_seed() -> None:
     with pytest.raises(ValueError):
         make_rng("s3", "train", -1)
+
+
+# ------------------------------------------------- splits and errors for training
+
+
+def test_evaluate_val_split_uses_val_stream() -> None:
+    task = get_task("s5")
+    seen: list[torch.Tensor] = []
+
+    def record(inputs: torch.Tensor) -> torch.Tensor:
+        seen.append(inputs.clone())
+        return torch.zeros(inputs.shape[0], inputs.shape[1], task.num_classes)
+
+    result = evaluate(record, task, train_length=4, num_sequences=3, batch_size=3, seed=9, split="val")
+    expected = task.sample(3, 32, make_rng("s5", "val", 9)).inputs
+    np.testing.assert_array_equal(seen[0].numpy(), expected)
+    assert result.split == "val"
+    assert result.to_dict()["split"] == "val"
+
+
+def test_evaluate_default_split_is_eval() -> None:
+    task = get_task("parity")
+    result = evaluate(_controlled_predictor(task, lambda p: False), task, train_length=4, num_sequences=2)
+    assert result.split == "eval"
+
+
+def test_non_finite_logits_raise_dedicated_error() -> None:
+    task = get_task("parity")
+
+    def inf(inputs: torch.Tensor) -> torch.Tensor:
+        return torch.full((inputs.shape[0], inputs.shape[1], 2), float("inf"))
+
+    with pytest.raises(NonFiniteLogitsError):
+        evaluate(inf, task, train_length=4, num_sequences=2, batch_size=2, seed=0)
+
+
+def test_eval_result_from_dict_round_trip() -> None:
+    task = get_task("flipflop")
+    result = evaluate(
+        _controlled_predictor(task, lambda p: p % 7 == 0),
+        task,
+        train_length=L,
+        num_sequences=5,
+        batch_size=2,
+        seed=1,
+        split="val",
+    )
+    back = EvalResult.from_dict(json.loads(json.dumps(result.to_dict())))
+    assert back == result

@@ -23,6 +23,7 @@ packages = ["src/sst"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: end-to-end tests that run real training (deselect with -m 'not slow')"]
 
 [tool.mypy]
 python_version = "3.12"

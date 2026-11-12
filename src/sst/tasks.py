@@ -16,6 +16,8 @@ Tasks
 ``s3``/``s5`` Symmetric groups. Token k is the k-th permutation in
              lexicographic order (see :mod:`sst.groups`); target_t is the
              index of s_t = g_1 . g_2 . ... . g_t, where (a . b)(i) = a(b(i)).
+``a5``       Alternating group A5 (60 even permutations of 5), lexicographic
+             order and the same composition as s3/s5.
 ``flipflop`` Tokens w0, w1, r, i (write 0, write 1, read, ignore). Target_t
              is the most recently written bit, including a write at t.
              Only reads are scored (mask True exactly at r tokens).
@@ -32,7 +34,7 @@ from dataclasses import dataclass
 import numpy as np
 import numpy.typing as npt
 
-from sst.groups import Group, cyclic_group, symmetric_group
+from sst.groups import Group, alternating_group, cyclic_group, symmetric_group
 
 IntArray = npt.NDArray[np.int64]
 BoolArray = npt.NDArray[np.bool_]
@@ -227,6 +229,7 @@ _REGISTRY: dict[str, Callable[[], Task]] = {
     "z3": lambda: GroupTask("z3", cyclic_group(3)),
     "s3": lambda: GroupTask("s3", symmetric_group(3)),
     "s5": lambda: GroupTask("s5", symmetric_group(5)),
+    "a5": lambda: GroupTask("a5", alternating_group(5)),
     "flipflop": lambda: FlipFlopTask(p_write=0.1, name="flipflop"),
     "flipflop_sparse": lambda: FlipFlopTask(p_write=0.02, name="flipflop_sparse"),
 }

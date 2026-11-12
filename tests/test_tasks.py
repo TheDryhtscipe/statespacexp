@@ -19,7 +19,7 @@ from sst.tasks import (
 )
 from sst.tasks import TASK_NAMES as REGISTERED_TASK_NAMES
 
-TASK_NAMES = ["parity", "z3", "s3", "s5", "flipflop", "flipflop_sparse"]
+TASK_NAMES = ["parity", "z3", "s3", "s5", "a5", "flipflop", "flipflop_sparse"]
 
 # S3 elements in lexicographic order (index: permutation, written as (p(0), p(1), p(2))):
 #   0: (0, 1, 2)  identity
