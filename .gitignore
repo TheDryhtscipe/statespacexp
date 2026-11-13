@@ -10,3 +10,6 @@ __pycache__/
 .pytest_cache/
 results/checkpoints/
 results/queue/
+
+# Experiment results (runs.jsonl, queue, logs)
+results/
