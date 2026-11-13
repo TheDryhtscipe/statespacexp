@@ -102,4 +102,4 @@ To see how many jobs are in each state, run `uv run python -m sst.queue status`.
 
 ## Licence
 
-[PLACEHOLDER: licence not chosen yet]
+The code is under the MIT licence. See [LICENSE](LICENSE).

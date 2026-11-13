@@ -2,6 +2,7 @@
 name = "sst"
 version = "0.1.0"
 description = "State-tracking tasks and length-generalisation evaluation for RNN/SSM experiments"
+license = "MIT"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "numpy>=2.0",
